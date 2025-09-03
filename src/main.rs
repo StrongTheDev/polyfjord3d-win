@@ -20,7 +20,7 @@ struct Args {
     videos: Vec<PathBuf>,
 
     /// Photogrammetry tool to use.
-    #[arg(long, value_enum, default_value_t = Tool::Colmap)]
+    #[arg(long, short = 't', value_enum, default_value_t = Tool::Glomap)]
     tool: Tool,
 
     /// Path to the scenes directory.
@@ -28,7 +28,7 @@ struct Args {
     scenes_dir: PathBuf,
 
     /// Force re-processing of existing scenes.
-    #[arg(long)]
+    #[arg(long, short = 'f')]
     force: bool,
 
     /// Path to ffmpeg executable.
