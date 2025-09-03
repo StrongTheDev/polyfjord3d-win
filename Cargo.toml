@@ -2,6 +2,7 @@
 name = "polyfjord3d"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 anyhow = "1.0.86"
@@ -13,3 +14,9 @@ serde_json = "1.0.117"
 zip = "2.1.3"
 which = "6.0.1"
 num_cpus = "1.16.0"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1.12"
+
+[package.metadata.winres]
+FileDescription = "terminal app to perform the PolyFjord AI-based 3D tracking pipeline."
