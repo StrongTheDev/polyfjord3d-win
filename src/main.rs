@@ -413,6 +413,17 @@ fn main() -> Result<()> {
 
     let tool_path = check_dependency(tool_name, repo_name, args.tool_path, install_dir)?;
 
+    if let Tool::Colmap = args.tool {
+        let colmap_install_dir = env::current_dir()?.join(install_dir);
+        let plugins_path = colmap_install_dir.join("plugins");
+        let mut qt_plugin_path = plugins_path.into_os_string();
+        if let Ok(existing_path) = env::var("QT_PLUGIN_PATH") {
+            qt_plugin_path.push(";");
+            qt_plugin_path.push(existing_path);
+        }
+        env::set_var("QT_PLUGIN_PATH", qt_plugin_path);
+    }
+
     if !args.scenes_dir.exists() {
         fs::create_dir_all(&args.scenes_dir)?;
     }
