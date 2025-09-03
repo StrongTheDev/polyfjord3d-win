@@ -13,7 +13,7 @@ const COLMAP_REPO: &str = "colmap/colmap";
 const GLOMAP_REPO: &str = "colmap/glomap";
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None, disable_version_flag = true)]
 struct Args {
     /// List of video files to process.
     #[arg(required = true)]
@@ -38,6 +38,10 @@ struct Args {
     /// Path to colmap or glomap executable.
     #[arg(long)]
     tool_path: Option<PathBuf>,
+
+    /// Print version information.
+    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
+    version_flag: Option<bool>,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Copy)]
