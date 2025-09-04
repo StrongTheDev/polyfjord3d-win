@@ -1,1 +1,5 @@
 /target
+/glomap
+/colmap
+/scenes
+*.mp4
