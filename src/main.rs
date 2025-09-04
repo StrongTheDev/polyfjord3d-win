@@ -1,5 +1,12 @@
+//! This crate provides a command-line tool for processing videos to generate 3D scenes
+//! using photogrammetry tools like COLMAP or GLOMAP. It automates the process of
+//! extracting frames, feature matching, and sparse reconstruction.
+//!
+//! Original credit: [Polyfjord]()
+
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
+use dirs::data_local_dir;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::blocking::Client;
 use serde::Deserialize;
@@ -9,9 +16,14 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// GitHub repository for COLMAP.
 const COLMAP_REPO: &str = "colmap/colmap";
+/// GitHub repository for GLOMAP.
 const GLOMAP_REPO: &str = "colmap/glomap";
+/// GitHub repository for FFmpeg builds.
+const FFMPEG_REPO: &str = "BtbN/FFmpeg-Builds";
 
+/// Command-line arguments for the application.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None, disable_version_flag = true)]
 struct Args {
@@ -44,18 +56,23 @@ struct Args {
     version_flag: Option<bool>,
 }
 
+/// Enum representing the available photogrammetry tools.
 #[derive(clap::ValueEnum, Clone, Debug, Copy)]
 enum Tool {
+    /// Use COLMAP for reconstruction.
     Colmap,
+    /// Use GLOMAP for reconstruction.
     Glomap,
 }
 
+/// Represents a GitHub release.
 #[derive(Deserialize, Debug)]
 struct Release {
     assets: Vec<Asset>,
     tag_name: String,
 }
 
+/// Represents a downloadable asset from a GitHub release.
 #[derive(Deserialize, Debug, Clone)]
 struct Asset {
     name: String,
@@ -122,8 +139,22 @@ fn unzip_file(path: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+fn get_install_dir() -> Result<PathBuf> {
+    let dir = data_local_dir()
+        .ok_or_else(|| anyhow!("Failed to get local data directory"))?
+        .join("polyfjord3d");
+    if !dir.exists() {
+        fs::create_dir_all(&dir)?;
+    }
+    Ok(dir)
+}
+
 fn prompt_and_download_tool(tool_name: &str, repo: &str, dest_dir: &Path) -> Result<PathBuf> {
-    println!("[INFO] {} not found.", tool_name);
+    println!(
+        "[INFO] {} not found in PATH or at ({})",
+        tool_name,
+        dest_dir.display()
+    );
     println!("[INFO] Fetching latest releases from GitHub...");
 
     let release = get_latest_release(repo)?;
@@ -132,7 +163,7 @@ fn prompt_and_download_tool(tool_name: &str, repo: &str, dest_dir: &Path) -> Res
     let mut downloadable_assets: Vec<Asset> = release
         .assets
         .into_iter()
-        .filter(|a| a.name.contains("windows") && a.name.ends_with(".zip"))
+        .filter(|a| a.name.contains("win") && a.name.ends_with(".zip"))
         .collect();
 
     if downloadable_assets.is_empty() {
@@ -197,10 +228,10 @@ fn check_dependency(
     repo: &str,
     arg_path: Option<PathBuf>,
     install_dir_name: &str,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, bool)> {
     if let Some(path) = arg_path {
         if path.exists() {
-            return Ok(path);
+            return Ok((path, false));
         } else {
             return Err(anyhow!(
                 "Provided path for {} does not exist: {}",
@@ -212,10 +243,10 @@ fn check_dependency(
 
     if let Ok(path) = which::which(name) {
         println!("[INFO] Found {} in PATH: {}", name, path.display());
-        return Ok(path);
+        return Ok((path, false));
     }
 
-    let install_dir = env::current_dir()?.join(install_dir_name);
+    let install_dir = get_install_dir()?.join(install_dir_name);
     if !install_dir.exists() {
         fs::create_dir_all(&install_dir)?;
     }
@@ -227,42 +258,41 @@ fn check_dependency(
             install_dir_name,
             path.display()
         );
-        return Ok(path);
+        return Ok((path, false));
     }
 
-    prompt_and_download_tool(name, repo, &install_dir)
+    prompt_and_download_tool(name, repo, &install_dir).map(|path| (path, true))
+    // Err(anyhow!("{} not found. Please install it and ensure it's in your PATH, or place it in the install directory.", name))
 }
 
-fn check_ffmpeg(arg_path: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(path) = arg_path {
-        if path.exists() {
-            return Ok(path);
-        } else {
-            return Err(anyhow!(
-                "Provided path for ffmpeg does not exist: {}",
-                path.display()
-            ));
-        }
-    }
+fn run_command(command: &mut Command, video_name: &str, step_name: &str) -> Result<()> {
+    let output = command
+        .output()
+        .with_context(|| format!("Failed to execute {}", step_name))?;
 
-    if let Ok(path) = which::which("ffmpeg") {
-        println!("[INFO] Found ffmpeg in PATH: {}", path.display());
-        return Ok(path);
+    if !output.status.success() {
+        io::stderr().write_all(&output.stderr)?;
+        Err(anyhow!("{} failed for {}", step_name, video_name))
+    } else {
+        Ok(())
     }
-
-    let install_dir = env::current_dir()?.join("ffmpeg");
-    if !install_dir.exists() {
-        fs::create_dir_all(&install_dir)?;
-    }
-
-    if let Some(path) = find_executable(&install_dir, "ffmpeg") {
-        println!("[INFO] Found ffmpeg in : {}", path.display());
-        return Ok(path);
-    }
-
-    Err(anyhow!("ffmpeg not found. Please install it and ensure it's in your PATH, or place it in a 'ffmpeg' folder."))
 }
 
+/// Processes a single video file.
+///
+/// # Arguments
+///
+/// * `video_path` - The path to the video file.
+/// * `scenes_dir` - The directory to store the processed scenes.
+/// * `ffmpeg_path` - The path to the ffmpeg executable.
+/// * `tool_path` - The path to the photogrammetry tool executable.
+/// * `colmap_path` - The path to the COLMAP executable.
+/// * `tool` - The photogrammetry tool to use.
+/// * `force` - Whether to force re-processing of existing scenes.
+///
+/// # Returns
+///
+/// A `Result` indicating success or failure.
 fn process_video(
     video_path: &Path,
     scenes_dir: &Path,
@@ -292,66 +322,53 @@ fn process_video(
     fs::create_dir_all(&images_dir)?;
     fs::create_dir_all(&sparse_dir)?;
 
-    // 1. Extract frames
+    // 1. Extract frames from the video using ffmpeg.
     println!("[1/4] Extracting frames...");
-    let output = Command::new(ffmpeg_path)
-        .arg("-i")
-        .arg(video_path)
-        .arg("-qscale:v")
-        .arg("2")
-        .arg(images_dir.join("frame_%06d.jpg"))
-        .output()
-        .context("Failed to execute ffmpeg.")?;
+    run_command(
+        Command::new(ffmpeg_path)
+            .arg("-i")
+            .arg(video_path)
+            .arg("-qscale:v")
+            .arg("2")
+            .arg(images_dir.join("frame_%06d.jpg")),
+        video_name,
+        "ffmpeg",
+    )?;
 
-    if !output.status.success() {
-        io::stderr().write_all(&output.stderr)?;
-        return Err(anyhow!("ffmpeg failed for {}", video_name));
-    }
-
-    // 2. Feature extraction (using colmap)
+    // 2. Run COLMAP feature extractor to detect keypoints in the images.
     println!("[2/4] Feature extraction...");
     let db_path = scene_dir.join("database.db");
-    let mut extractor_cmd = Command::new(colmap_path);
-    extractor_cmd
-        .arg("feature_extractor")
-        .arg("--database_path")
-        .arg(&db_path)
-        .arg("--image_path")
-        .arg(&images_dir)
-        .arg("--ImageReader.single_camera")
-        .arg("1")
-        .arg("--SiftExtraction.use_gpu")
-        .arg("1")
-        .arg("--SiftExtraction.max_image_size")
-        .arg("4096");
+    run_command(
+        Command::new(colmap_path)
+            .arg("feature_extractor")
+            .arg("--database_path")
+            .arg(&db_path)
+            .arg("--image_path")
+            .arg(&images_dir)
+            .arg("--ImageReader.single_camera")
+            .arg("1")
+            .arg("--SiftExtraction.use_gpu")
+            .arg("1")
+            .arg("--SiftExtraction.max_image_size")
+            .arg("4096"),
+        video_name,
+        "feature_extractor",
+    )?;
 
-    let output = extractor_cmd
-        .output()
-        .context("Failed to execute feature_extractor")?;
-    if !output.status.success() {
-        io::stderr().write_all(&output.stderr)?;
-        return Err(anyhow!("feature_extractor failed for {}", video_name));
-    }
-
-    // 3. Feature matching (using colmap)
+    // 3. Run COLMAP sequential matcher to find corresponding features between images.
     println!("[3/4] Feature matching...");
-    let mut matcher_cmd = Command::new(colmap_path);
-    matcher_cmd
-        .arg("sequential_matcher")
-        .arg("--database_path")
-        .arg(&db_path)
-        .arg("--SequentialMatching.overlap")
-        .arg("15");
+    run_command(
+        Command::new(colmap_path)
+            .arg("sequential_matcher")
+            .arg("--database_path")
+            .arg(&db_path)
+            .arg("--SequentialMatching.overlap")
+            .arg("15"),
+        video_name,
+        "sequential_matcher",
+    )?;
 
-    let output = matcher_cmd
-        .output()
-        .context("Failed to execute sequential_matcher")?;
-    if !output.status.success() {
-        io::stderr().write_all(&output.stderr)?;
-        return Err(anyhow!("sequential_matcher failed for {}", video_name));
-    }
-
-    // 4. Sparse reconstruction (mapping)
+    // 4. Perform sparse reconstruction to create a 3D point cloud.
     println!("[4/4] Sparse reconstruction...");
     let mut mapper_cmd = Command::new(tool_path);
     mapper_cmd
@@ -368,40 +385,39 @@ fn process_video(
         mapper_cmd.arg("--Mapper.num_threads").arg(num_threads);
     }
 
-    let output = mapper_cmd.output().context("Failed to execute mapper")?;
+    run_command(&mut mapper_cmd, video_name, "mapper")?;
 
-    if !output.status.success() {
-        io::stderr().write_all(&output.stderr)?;
-        return Err(anyhow!("mapper failed for {}", video_name));
-    }
-
-    // Export model to TXT
+    // Export the reconstructed model to a human-readable TXT format.
     let model_path = sparse_dir.join("0");
     if model_path.exists() {
         println!("[INFO] Exporting model to TXT...");
         if let Tool::Glomap = tool {
-            // Export twice for glomap
+            // For Glomap, the model needs to be converted twice.
+            run_command(
+                Command::new(colmap_path)
+                    .arg("model_converter")
+                    .arg("--input_path")
+                    .arg(&model_path)
+                    .arg("--output_path")
+                    .arg(&model_path)
+                    .arg("--output_type")
+                    .arg("TXT"),
+                video_name,
+                "model_converter (for glomap)",
+            )?;
+        }
+        run_command(
             Command::new(colmap_path)
                 .arg("model_converter")
                 .arg("--input_path")
                 .arg(&model_path)
                 .arg("--output_path")
-                .arg(&model_path)
+                .arg(&sparse_dir)
                 .arg("--output_type")
-                .arg("TXT")
-                .output()
-                .context("Failed to execute model_converter (for glomap)")?;
-        }
-        Command::new(colmap_path)
-            .arg("model_converter")
-            .arg("--input_path")
-            .arg(&model_path)
-            .arg("--output_path")
-            .arg(&sparse_dir)
-            .arg("--output_type")
-            .arg("TXT")
-            .output()
-            .context("Failed to execute model_converter")?;
+                .arg("TXT"),
+            video_name,
+            "model_converter",
+        )?;
     }
 
     println!("✔ Finished {}", video_name);
@@ -411,7 +427,12 @@ fn process_video(
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let ffmpeg_path = check_ffmpeg(args.ffmpeg_path)?;
+    let mut need_to_modify_path = false;
+    let (ffmpeg_path, did_download) = check_dependency("ffmpeg", FFMPEG_REPO, args.ffmpeg_path, "ffmpeg")?;
+    if did_download {
+        need_to_modify_path = true;
+    }
+
     let tool_name = match args.tool {
         Tool::Colmap => "colmap",
         Tool::Glomap => "glomap",
@@ -425,17 +446,26 @@ fn main() -> Result<()> {
         Tool::Glomap => "glomap",
     };
 
-    let tool_path = check_dependency(tool_name, repo_name, args.tool_path, install_dir)?;
+    let (tool_path, did_download) = check_dependency(tool_name, repo_name, args.tool_path, install_dir)?;
 
     // For Glomap, we also need colmap
-    let colmap_path = if let Tool::Glomap = args.tool {
+    let (colmap_path, did_download) = if let Tool::Glomap = args.tool {
         println!("[INFO] Glomap pipeline requires COLMAP for some steps.");
         check_dependency("colmap", COLMAP_REPO, None, "colmap")?
     } else {
-        tool_path.clone()
+        (tool_path.clone(), did_download)
     };
 
-    let colmap_install_dir = env::current_dir()?.join("colmap");
+    if did_download {
+        need_to_modify_path = true;
+    }
+
+    if need_to_modify_path {
+        println!("[INFO] Need to modify PATH environment variable.");
+        run_command(Command::new("modify_polyfjord_path").arg(&colmap_path.parent().unwrap()), "modify_path", "modify_path")?;
+    }
+
+    let colmap_install_dir = get_install_dir()?.join("colmap");
     let plugins_path = colmap_install_dir.join("plugins");
     let mut qt_plugin_path = plugins_path.into_os_string();
     if let Ok(existing_path) = env::var("QT_PLUGIN_PATH") {
