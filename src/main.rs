@@ -268,6 +268,7 @@ fn process_video(
     scenes_dir: &Path,
     ffmpeg_path: &Path,
     tool_path: &Path,
+    colmap_path: &Path,
     tool: Tool,
     force: bool,
 ) -> Result<()> {
@@ -307,24 +308,22 @@ fn process_video(
         return Err(anyhow!("ffmpeg failed for {}", video_name));
     }
 
-    // 2. Feature extraction
+    // 2. Feature extraction (using colmap)
     println!("[2/4] Feature extraction...");
     let db_path = scene_dir.join("database.db");
-    let mut extractor_cmd = Command::new(tool_path);
+    let mut extractor_cmd = Command::new(colmap_path);
     extractor_cmd
         .arg("feature_extractor")
         .arg("--database_path")
         .arg(&db_path)
         .arg("--image_path")
-        .arg(&images_dir);
-
-    if let Tool::Colmap = tool {
-        extractor_cmd
-            .arg("--ImageReader.single_camera")
-            .arg("1")
-            .arg("--SiftExtraction.use_gpu")
-            .arg("1");
-    }
+        .arg(&images_dir)
+        .arg("--ImageReader.single_camera")
+        .arg("1")
+        .arg("--SiftExtraction.use_gpu")
+        .arg("1")
+        .arg("--SiftExtraction.max_image_size")
+        .arg("4096");
 
     let output = extractor_cmd
         .output()
@@ -334,17 +333,15 @@ fn process_video(
         return Err(anyhow!("feature_extractor failed for {}", video_name));
     }
 
-    // 3. Feature matching
+    // 3. Feature matching (using colmap)
     println!("[3/4] Feature matching...");
-    let mut matcher_cmd = Command::new(tool_path);
+    let mut matcher_cmd = Command::new(colmap_path);
     matcher_cmd
         .arg("sequential_matcher")
         .arg("--database_path")
-        .arg(&db_path);
-
-    if let Tool::Colmap = tool {
-        matcher_cmd.arg("--SequentialMatching.overlap").arg("15");
-    }
+        .arg(&db_path)
+        .arg("--SequentialMatching.overlap")
+        .arg("15");
 
     let output = matcher_cmd
         .output()
@@ -356,19 +353,22 @@ fn process_video(
 
     // 4. Sparse reconstruction (mapping)
     println!("[4/4] Sparse reconstruction...");
-    let num_threads = num_cpus::get().to_string();
-    let output = Command::new(tool_path)
+    let mut mapper_cmd = Command::new(tool_path);
+    mapper_cmd
         .arg("mapper")
         .arg("--database_path")
         .arg(&db_path)
         .arg("--image_path")
         .arg(&images_dir)
         .arg("--output_path")
-        .arg(&sparse_dir)
-        .arg("--Mapper.num_threads")
-        .arg(num_threads)
-        .output()
-        .context("Failed to execute mapper")?;
+        .arg(&sparse_dir);
+
+    if let Tool::Colmap = tool {
+        let num_threads = num_cpus::get().to_string();
+        mapper_cmd.arg("--Mapper.num_threads").arg(num_threads);
+    }
+
+    let output = mapper_cmd.output().context("Failed to execute mapper")?;
 
     if !output.status.success() {
         io::stderr().write_all(&output.stderr)?;
@@ -378,10 +378,24 @@ fn process_video(
     // Export model to TXT
     let model_path = sparse_dir.join("0");
     if model_path.exists() {
-        Command::new(tool_path)
+        println!("[INFO] Exporting model to TXT...");
+        if let Tool::Glomap = tool {
+            // Export twice for glomap
+            Command::new(colmap_path)
+                .arg("model_converter")
+                .arg("--input_path")
+                .arg(&model_path)
+                .arg("--output_path")
+                .arg(&model_path)
+                .arg("--output_type")
+                .arg("TXT")
+                .output()
+                .context("Failed to execute model_converter (for glomap)")?;
+        }
+        Command::new(colmap_path)
             .arg("model_converter")
             .arg("--input_path")
-            .arg(model_path)
+            .arg(&model_path)
             .arg("--output_path")
             .arg(&sparse_dir)
             .arg("--output_type")
@@ -413,16 +427,22 @@ fn main() -> Result<()> {
 
     let tool_path = check_dependency(tool_name, repo_name, args.tool_path, install_dir)?;
 
-    if let Tool::Colmap = args.tool {
-        let colmap_install_dir = env::current_dir()?.join(install_dir);
-        let plugins_path = colmap_install_dir.join("plugins");
-        let mut qt_plugin_path = plugins_path.into_os_string();
-        if let Ok(existing_path) = env::var("QT_PLUGIN_PATH") {
-            qt_plugin_path.push(";");
-            qt_plugin_path.push(existing_path);
-        }
-        env::set_var("QT_PLUGIN_PATH", qt_plugin_path);
+    // For Glomap, we also need colmap
+    let colmap_path = if let Tool::Glomap = args.tool {
+        println!("[INFO] Glomap pipeline requires COLMAP for some steps.");
+        check_dependency("colmap", COLMAP_REPO, None, "colmap")?
+    } else {
+        tool_path.clone()
+    };
+
+    let colmap_install_dir = env::current_dir()?.join("colmap");
+    let plugins_path = colmap_install_dir.join("plugins");
+    let mut qt_plugin_path = plugins_path.into_os_string();
+    if let Ok(existing_path) = env::var("QT_PLUGIN_PATH") {
+        qt_plugin_path.push(";");
+        qt_plugin_path.push(existing_path);
     }
+    env::set_var("QT_PLUGIN_PATH", qt_plugin_path);
 
     if !args.scenes_dir.exists() {
         fs::create_dir_all(&args.scenes_dir)?;
@@ -438,6 +458,7 @@ fn main() -> Result<()> {
             &args.scenes_dir,
             &ffmpeg_path,
             &tool_path,
+            &colmap_path,
             args.tool,
             args.force,
         ) {
