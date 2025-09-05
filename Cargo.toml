@@ -2,7 +2,7 @@
 name = "polyfjord3d"
 version = "0.1.1"
 edition = "2021"
-# build = "build.rs"
+default-run = "polyfjord3d"
 
 [[bin]]
 name = "modify_polyfjord_path"
@@ -21,12 +21,6 @@ num_cpus = "1.16.0"
 dirs = "5.0.1"
 winreg = "0.52.0"
 winapi = { version = "0.3.9", features = ["winuser"] }
-
-# [target.'cfg(windows)'.build-dependencies]
-# winres = "0.1.12"
-
-[package.metadata.winres]
-FileDescription = "A terminal app to perform Polyfjord's AI-based 3D tracking pipeline."
 
 [package.metadata.packager]
 before-packaging-command = "cargo b -r"

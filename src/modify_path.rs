@@ -5,7 +5,7 @@
 
 use clap::Parser;
 use dirs::data_local_dir;
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, absolute};
 use winreg::enums::*;
 use winreg::RegKey;
 
@@ -20,6 +20,8 @@ struct Args {
     #[arg(long, short = 'm', value_enum, default_value_t = Mode::User)]
     mode: Mode,
 
+    /// Broadcast a message to all top-level windows to notify them of the environment change.
+    /// This allows other applications (like File Explorer) to recognize the new PATH immediately.
     #[arg(long, short = 'b')]
     broadcast: bool,
 
@@ -110,10 +112,10 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let time = std::time::Instant::now();
 
     // Add install dir to path
-    let install_dir: PathBuf = std::path::absolute(args.install_dir.clone())?;
+    let install_dir: PathBuf = absolute(args.install_dir.clone())?;
     if !current_path
         .split(';')
-        .any(|p| std::path::Path::new(p) == install_dir)
+        .any(|p| Path::new(p) == install_dir)
     {
         println!(
             "Adding {} to PATH. ({} ms)",

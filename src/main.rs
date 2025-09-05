@@ -23,9 +23,10 @@ const GLOMAP_REPO: &str = "colmap/glomap";
 /// GitHub repository for FFmpeg builds.
 const FFMPEG_REPO: &str = "BtbN/FFmpeg-Builds";
 
-/// Command-line arguments for the application.
+/// polyfjord3d command-line utility.
+/// This tool converts your videos into photogrammetry models - for 3D tracking in Blender 3D.
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None, disable_version_flag = true)]
+#[command(author, version, about, long_about = None, disable_version_flag = true, color = clap::ColorChoice::Always, after_help = "Example:\n    polyfjord3d  video.mp4  video.mov")]
 struct Args {
     /// List of video files to process.
     #[arg(required = true)]
@@ -447,6 +448,9 @@ fn main() -> Result<()> {
     };
 
     let (tool_path, did_download) = check_dependency(tool_name, repo_name, args.tool_path, install_dir)?;
+    if did_download {
+        need_to_modify_path = true;
+    }
 
     // For Glomap, we also need colmap
     let (colmap_path, did_download) = if let Tool::Glomap = args.tool {
