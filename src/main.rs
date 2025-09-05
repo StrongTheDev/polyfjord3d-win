@@ -2,7 +2,7 @@
 //! using photogrammetry tools like COLMAP or GLOMAP. It automates the process of
 //! extracting frames, feature matching, and sparse reconstruction.
 //!
-//! Original credit: [Polyfjord]()
+//! Original credit: [Polyfjord](https://www.youtube.com/@Polyfjord)
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
