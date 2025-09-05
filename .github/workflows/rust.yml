@@ -17,7 +17,16 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Restore Rust cache
+      uses: Swatinem/rust-cache@v2
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    - name: Save artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: polyfjord3d-debug-gh-action
+        path: |
+          target/debug/*.exe
+
